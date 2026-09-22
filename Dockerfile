@@ -6,7 +6,7 @@ COPY pom.xml .
 
 COPY src ./src
 
-RUN mvn clean package -DskipTests
+RUN mvn -B clean package -Dmaven.test.skip=true
 
 FROM eclipse-temurin:17-jdk
 
@@ -15,5 +15,3 @@ WORKDIR /app
 COPY --from=builder /app/target/*.jar app.jar
 
 CMD ["java", "-jar", "app.jar"]
-
-
