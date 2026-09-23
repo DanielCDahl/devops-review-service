@@ -5,8 +5,6 @@ on:
     branches:
       - main
 
-permissions:
-  contents: read
 jobs:
   test:
     name: Run tests
@@ -21,22 +19,42 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 --silent"
+          --health-cmd="mysqladmin ping --protocol=tcp -h 127.0.0.1 --silent"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
+          --health-start-period=30s
 
     env:
       DB_URL: jdbc:mysql://127.0.0.1:3306/test_db
       DB_USERNAME: root
       DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
       JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+
       BOOKING_SERVICE_URL: http://localhost:8083
       CUSTOMER_SERVICE_BASE_URL: http://localhost:8081
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Verify CI secrets
+        env:
+          CI_DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+          CI_JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+        shell: bash
+        run: |
+          if [ -z "$CI_DB_PASSWORD" ]; then
+            echo "::error::CI_DB_PASSWORD is missing"
+            exit 1
+          fi
+
+          if [ -z "$CI_JWT_SECRET" ]; then
+            echo "::error::CI_JWT_SECRET is missing"
+            exit 1
+          fi
+
+          echo "CI secrets are configured."
 
       - name: Set up Java 17
         uses: actions/setup-java@v6
@@ -45,8 +63,40 @@ jobs:
           java-version: "17"
           cache: maven
 
-      - name: Run tests
+      - name: Verify MySQL connection
+        env:
+          CI_DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+        shell: bash
+        run: |
+          docker exec \
+            -e MYSQL_PWD="$CI_DB_PASSWORD" \
+            "${{ job.services.mysql.id }}" \
+            mysql \
+              -h 127.0.0.1 \
+              -u root \
+              -D test_db \
+              -e "SELECT 1;"
+
+          echo "MySQL connection successful."
+
+      - name: Run Maven tests
+        id: maven_tests
         run: mvn -B test
+
+      - name: Show test failure details
+        if: ${{ failure() && steps.maven_tests.outcome == 'failure' }}
+        shell: bash
+        run: |
+          echo "Searching Maven test reports..."
+
+          if [ -d target/surefire-reports ]; then
+            grep -R -n -E \
+              "Caused by:|Access denied|Communications link failure|Could not resolve placeholder|Failed to configure a DataSource|SQLException" \
+              target/surefire-reports/ \
+              | head -n 60 || true
+          else
+            echo "No Surefire reports were generated."
+          fi
 
   build-and-deploy:
     name: Build, push and deploy
